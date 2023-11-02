@@ -1,0 +1,21 @@
+## data
+data_file: dataset/electricity.csv
+
+## model
+seq_len: 336
+label_len: 96
+stride: 64
+patch_len: 64
+
+## training
+per_device_train_batch_size: 24
+per_device_eval_batch_size: 24
+adam_eps: 1.0e-8
+weight_decay: 0.01
+max_grad_norm: 1.0
+lr: 0.0001
+max_train_epochs: 100
+seed: 19980406
+gradient_accumulation_steps: 4
+val_check_interval: 1.0
+pct_start: 0.12
