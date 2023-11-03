@@ -10,7 +10,6 @@ __pycache__
 .vscode
 nanoDPR
 dataset
-PatchTST
 transformers
 nohup.out
 LTSF-Linear
