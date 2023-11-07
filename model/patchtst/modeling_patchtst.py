@@ -315,7 +315,7 @@ class PatchTSTForTimeSeriesPrediction(PatchTSTPreTrainedModel):
         patched_input_values = patched_input_values.permute(0,2,1,3) #[bs x num_patch x num_channels x patch_len]
         bs, L, nvars, D = patched_input_values.shape
         x = patched_input_values.clone()
- 
+
         len_keep = int(L * (1 - self.mask_ratio[0]))
             
         noise = torch.rand(bs, L, nvars,device=patched_input_values.device)  # noise in [0, 1], bs x L x nvars
@@ -366,6 +366,7 @@ class PatchTSTForTimeSeriesPrediction(PatchTSTPreTrainedModel):
         output = output.view(batch_size,num_channels,-1)#[batch_size,num_channels,num_patch*patch_len]
         output = self.revin_layers(output.permute(0,2,1),'denorm')#[batch_size,num_patch*patch_len, num_channels]
         output=output.squeeze(2).view(batch_size,num_patch, patch_len)#[batch_size,num_patch, patch_len]
-
+        if torch.sum(torch.isinf(output)).item()!=0:
+            pdb.set_trace()
         return patched_input_values.squeeze(1), output, mask
     

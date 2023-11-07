@@ -162,7 +162,7 @@ class TimeSeriesDataset(torch.utils.data.Dataset):
  
 def validate(model,dataloader,accelerator):
     model.eval()
-    preds,labels,losses = [],[],[]
+    preds,labels,masks = [],[],[]
     for inputs in dataloader:
         with torch.no_grad():
             inputs = inputs.float()
@@ -170,16 +170,11 @@ def validate(model,dataloader,accelerator):
             label=label.detach().cpu().numpy()
             pred=pred.detach().cpu().numpy()
             mask=mask.detach().cpu().numpy()
-            
-            loss = (pred - label) ** 2
-            loss = loss.mean(dim=-1)
-            loss = (loss * mask).sum() / mask.sum()
     
         preds.append(pred)
         labels.append(label)
-        losses.append(loss)
-    
-    pdb.set_trace() 
+        masks.append(mask)
+
     if accelerator.use_distributed and accelerator.num_processes>1:
         preds_from_all_gpus = [None for _ in range(accelerator.num_processes)] 
         dist.all_gather_object(preds_from_all_gpus,preds)
@@ -188,13 +183,21 @@ def validate(model,dataloader,accelerator):
         labels_from_all_gpus = [None for _ in range(accelerator.num_processes)] 
         dist.all_gather_object(labels_from_all_gpus,labels)
         labels = [x for y in labels_from_all_gpus for x in y]
+        
+        mask_from_all_gpus = [None for _ in range(accelerator.num_processes)] 
+        dist.all_gather_object(masks_from_all_gpus,masks)
+        masks = [x for y in masks_from_all_gpus for x in y]
     
     preds  = np.concatenate(preds,axis=0)[:len(dataloader.dataset)]
     labels = np.concatenate(labels,axis=0)[:len(dataloader.dataset)]
+    masks = np.concatenate(masks,axis=0)[:len(dataloader.dataset)]
     
-    final_loss = np.mean(losses)
+    mse = (preds - labels) ** 2
+    mse = mse.mean(dim=-1)
+    mse = (mse * masks).sum() / masks.sum()
+    final_mse = np.mean(mse)
             
-    return final_loss
+    return final_mse
 
 def main():
     args = parse_args()
@@ -289,10 +292,14 @@ def main():
                     labels, preds, mask = model(inputs)
                     loss = (preds - labels) ** 2
                     loss = loss.mean(dim=-1)
+                    # ((((preds - labels) ** 2).mean(dim=-1))*mask).sum()
                     loss = (loss * mask).sum() / mask.sum()
                     ## TODO: calcuate masked loss
                     # loss = F.mse_loss(model(inputs),labels)
-                accelerator.backward(loss)
+                try:
+                    accelerator.backward(loss)
+                except:
+                    pdb.set_trace()
                 ## one optimization step
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
@@ -308,18 +315,19 @@ def main():
                     accelerator.log({"lr": lr_scheduler.get_last_lr()[0]}, step=completed_steps)
                     
                     if completed_steps % EVAL_STEPS == 0:
-                        dev_mse,dev_mae   = validate(model,dev_dataloader,accelerator)
-                        test_mse,test_mae = validate(model,test_dataloader,accelerator)
+                        dev_mse  = validate(model,dev_dataloader,accelerator)
+                        # test_mse = validate(model,test_dataloader,accelerator)
                         model.train()
                         accelerator.log({"epoch": epoch+1}, step=completed_steps)
                         accelerator.log({"dev_mse": dev_mse}, step=completed_steps)
+                        progress_bar_postfix_dict.update(dict(dev_mse=f"{dev_mse:.4f}"))
                         if dev_mse < BEST_DEV_MSE:
                             PATIENCE = args.num_patience
                             BEST_DEV_MSE = dev_mse
-                            BEST_TEST_MAE = test_mae
-                            BEST_TEST_MSE = test_mse
-                            accelerator.log({"test_mse":test_mse}, step=completed_steps)
-                            progress_bar_postfix_dict.update(dict(test_mse=f"{test_mse:.4f}"))
+                            # BEST_TEST_MAE = test_mae
+                            # BEST_TEST_MSE = test_mse
+                            # accelerator.log({"test_mse":test_mse}, step=completed_steps)
+                            # progress_bar_postfix_dict.update(dict(test_mse=f"{test_mse:.4f}"))
                             accelerator.wait_for_everyone()
                             if accelerator.is_local_main_process:
                                 unwrapped_model = accelerator.unwrap_model(model)
@@ -332,10 +340,10 @@ def main():
                                 break
         if SHOULD_BREAK:break       
 
-    accelerator.log({"final mse":BEST_TEST_MSE}, step=completed_steps)
+    accelerator.log({"final mse":BEST_DEV_MSE}, step=completed_steps)
     if accelerator.is_local_main_process:
         wandb_tracker.finish()
-        print(f"test mse:{BEST_TEST_MSE:.4f} test_mae:{BEST_TEST_MAE:.4f}")
+        print(f"dev mse:{BEST_DEV_MSE:.4f}")
     accelerator.end_training()
 
 if __name__ == '__main__':
